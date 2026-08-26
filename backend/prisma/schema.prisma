@@ -1,0 +1,274 @@
+// Dental Clinic Business Software - Database Schema
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  DENTIST
+  RECEPTIONIST
+  ASSISTANT
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  CHECKED_IN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum InvoiceStatus {
+  DRAFT
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  VOID
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  INSURANCE
+  BANK_TRANSFER
+  OTHER
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  UNSPECIFIED
+}
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  passwordHash  String
+  firstName     String
+  lastName      String
+  role          Role     @default(RECEPTIONIST)
+  phone         String?
+  specialty     String?  // e.g. "Orthodontist", relevant for DENTIST role
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  appointmentsAsDentist Appointment[]  @relation("DentistAppointments")
+  createdInvoices       Invoice[]      @relation("InvoiceCreatedBy")
+  auditLogs             AuditLog[]
+  treatmentRecords      TreatmentRecord[] @relation("PerformedBy")
+}
+
+model Patient {
+  id              String   @id @default(uuid())
+  firstName       String
+  lastName        String
+  email           String?
+  phone           String
+  dateOfBirth     DateTime?
+  gender          Gender   @default(UNSPECIFIED)
+  address         String?
+  city            String?
+  state           String?
+  postalCode      String?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  insuranceProvider     String?
+  insurancePolicyNo     String?
+  allergies       String?
+  medicalHistory  String?
+  notes           String?
+  balance         Decimal  @default(0) @db.Decimal(10, 2)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  appointments      Appointment[]
+  invoices          Invoice[]
+  treatmentRecords  TreatmentRecord[]
+  dentalChartEntries DentalChartEntry[]
+  documents         PatientDocument[]
+
+  @@index([lastName, firstName])
+  @@index([phone])
+}
+
+// One row per tooth (or per condition on a tooth) using the Universal Numbering System (1-32)
+model DentalChartEntry {
+  id          String   @id @default(uuid())
+  patientId   String
+  toothNumber Int      // 1-32 (adult) - simplified universal numbering
+  condition   String   // e.g. "Cavity", "Filled", "Crown", "Missing", "Root Canal", "Healthy"
+  surface     String?  // e.g. "Occlusal", "Mesial", "Distal", "Buccal", "Lingual"
+  notes       String?
+  recordedAt  DateTime @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId, toothNumber])
+}
+
+model PatientDocument {
+  id         String   @id @default(uuid())
+  patientId  String
+  title      String
+  fileUrl    String
+  fileType   String?
+  uploadedAt DateTime @default(now())
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+}
+
+model Treatment {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  category    String?  // e.g. "Preventive", "Restorative", "Cosmetic", "Surgical", "Orthodontic"
+  price       Decimal  @db.Decimal(10, 2)
+  durationMin Int      @default(30)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  appointments     Appointment[]
+  treatmentRecords TreatmentRecord[]
+  invoiceItems     InvoiceItem[]
+}
+
+model Appointment {
+  id          String            @id @default(uuid())
+  patientId   String
+  dentistId   String
+  treatmentId String?
+  startTime   DateTime
+  endTime     DateTime
+  status      AppointmentStatus @default(SCHEDULED)
+  reason      String?
+  notes       String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  patient   Patient    @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  dentist   User       @relation("DentistAppointments", fields: [dentistId], references: [id])
+  treatment Treatment? @relation(fields: [treatmentId], references: [id])
+
+  @@index([dentistId, startTime])
+  @@index([patientId])
+}
+
+// Record of a treatment actually performed on a patient (feeds billing + dental chart history)
+model TreatmentRecord {
+  id            String   @id @default(uuid())
+  patientId     String
+  treatmentId   String
+  performedById String
+  toothNumber   Int?
+  notes         String?
+  performedAt   DateTime @default(now())
+
+  patient     Patient   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  treatment   Treatment @relation(fields: [treatmentId], references: [id])
+  performedBy User      @relation("PerformedBy", fields: [performedById], references: [id])
+}
+
+model Invoice {
+  id            String        @id @default(uuid())
+  invoiceNumber String        @unique
+  patientId     String
+  createdById   String
+  status        InvoiceStatus @default(UNPAID)
+  subtotal      Decimal       @db.Decimal(10, 2) @default(0)
+  discount      Decimal       @db.Decimal(10, 2) @default(0)
+  tax           Decimal       @db.Decimal(10, 2) @default(0)
+  total         Decimal       @db.Decimal(10, 2) @default(0)
+  amountPaid    Decimal       @db.Decimal(10, 2) @default(0)
+  dueDate       DateTime?
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  patient   Patient       @relation(fields: [patientId], references: [id])
+  createdBy User          @relation("InvoiceCreatedBy", fields: [createdById], references: [id])
+  items     InvoiceItem[]
+  payments  Payment[]
+}
+
+model InvoiceItem {
+  id          String  @id @default(uuid())
+  invoiceId   String
+  treatmentId String?
+  description String
+  quantity    Int     @default(1)
+  unitPrice   Decimal @db.Decimal(10, 2)
+  total       Decimal @db.Decimal(10, 2)
+
+  invoice   Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  treatment Treatment? @relation(fields: [treatmentId], references: [id])
+}
+
+model Payment {
+  id            String        @id @default(uuid())
+  invoiceId     String
+  amount        Decimal       @db.Decimal(10, 2)
+  method        PaymentMethod @default(CASH)
+  reference     String?
+  paidAt        DateTime      @default(now())
+  notes         String?
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model InventoryItem {
+  id            String   @id @default(uuid())
+  name          String
+  sku           String?  @unique
+  category      String?
+  quantity      Int      @default(0)
+  reorderLevel  Int      @default(10)
+  unit          String   @default("unit")
+  unitCost      Decimal  @db.Decimal(10, 2) @default(0)
+  supplier      String?
+  expiryDate    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  movements InventoryMovement[]
+}
+
+enum InventoryMovementType {
+  RESTOCK
+  USAGE
+  ADJUSTMENT
+  WASTE
+}
+
+model InventoryMovement {
+  id        String                 @id @default(uuid())
+  itemId    String
+  type      InventoryMovementType
+  quantity  Int
+  note      String?
+  createdAt DateTime               @default(now())
+
+  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+}
